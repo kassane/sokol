@@ -298,7 +298,7 @@ def funcdecl_args_c(decl, prefix):
             s += ", "
         param_name = param_decl['name']
         param_type = check_override(f'{func_name}.{param_name}', default=param_decl['type'])
-        s += as_c_arg_type(param_type, prefix)
+        s += f'_: {as_c_arg_type(param_type, prefix)}'
     return s
 
 def funcdecl_args_swift(decl, prefix):
@@ -410,6 +410,7 @@ def gen_func_c(decl, prefix):
         l(f"func {decl['name']}({funcdecl_args_c(decl, prefix)}) -> {funcdecl_result_c(decl, prefix)}")
     else:
         l(f"func {decl['name']}({funcdecl_args_c(decl, prefix)})")
+    l(f"")
 
 def gen_func_swift(decl, prefix):
     c_func_name = decl['name']
@@ -419,7 +420,10 @@ def gen_func_swift(decl, prefix):
         l(f"typealias {swift_func_name} = {c_func_name}")
     else:
         swift_res_type = funcdecl_result_swift(decl, prefix)
-        l(f"func {swift_func_name}({funcdecl_args_swift(decl, prefix)}) {swift_res_type} {{")
+        if funcdecl_result_c(decl, prefix) != 'void':
+            l(f"func {swift_func_name}({funcdecl_args_swift(decl, prefix)}) -> {swift_res_type} {{")
+        else:
+            l(f"func {swift_func_name}({funcdecl_args_swift(decl, prefix)}) {{")
         if is_swift_string(swift_res_type):
             # special case: convert C string to Swift string slice
             s = f"    return cStrToSwift({c_func_name}("
