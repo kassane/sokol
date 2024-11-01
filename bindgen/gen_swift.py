@@ -57,7 +57,8 @@ c_callbacks = [
 
 # NOTE: syntax for function results: "func_name.RESULT"
 overrides = {
-    'func':                                  'func_',
+    'slog_func':                            'fn',
+    'func':                                 'fn',
     'sgl_error':                            'sgl_get_error',   # 'error' is reserved in Swift
     'sgl_deg':                              'sgl_as_degrees',
     'sgl_rad':                              'sgl_as_radians',
@@ -221,11 +222,12 @@ def as_c_arg_type(arg_type, prefix):
     elif util.is_string_ptr(arg_type):
         return "UnsafePointer<CChar>?"
     elif is_const_struct_ptr(arg_type):
-        return f"{as_swift_struct_type(util.extract_ptr_type(arg_type), prefix)}"
+        return "UnsafeRawPointer?"
+        #return f"UnsafePointer<{as_swift_struct_type(util.extract_ptr_type(arg_type), prefix)}>"
     elif is_prim_ptr(arg_type):
-        return f"{as_swift_prim_type(util.extract_ptr_type(arg_type))}"
+        return f"UnsafeMutablePointer<{as_swift_prim_type(util.extract_ptr_type(arg_type))}>"
     elif is_const_prim_ptr(arg_type):
-        return f"let {as_swift_prim_type(util.extract_ptr_type(arg_type))}"
+        return f"UnsafePointer<{as_swift_prim_type(util.extract_ptr_type(arg_type))}>"
     else:
         sys.exit(f"Error as_c_arg_type(): {arg_type}")
 
@@ -250,7 +252,7 @@ def as_swift_arg_type(arg_prefix, arg_type, prefix):
     elif util.is_string_ptr(arg_type):
         return pre + "UnsafePointer<CChar>?"
     elif is_const_struct_ptr(arg_type):
-        return pre + f"{as_swift_struct_type(util.extract_ptr_type(arg_type), prefix)}"
+        return pre + f"UnsafePointer<{as_swift_struct_type(util.extract_ptr_type(arg_type), prefix)}>?"
     elif is_prim_ptr(arg_type):
         return pre + f"UnsafeMutablePointer<{as_swift_prim_type(util.extract_ptr_type(arg_type))}>?"
     elif is_const_prim_ptr(arg_type):
@@ -345,7 +347,7 @@ def gen_struct(decl, prefix):
         elif util.is_void_ptr(field_type):
             l(f"    var {field_name}: UnsafeMutableRawPointer? = nil")
         elif is_const_prim_ptr(field_type):
-            l(f"    let {field_name}: {as_swift_prim_type(util.extract_ptr_type(field_type))} = nil")
+            l(f"    var {field_name}: {as_swift_prim_type(util.extract_ptr_type(field_type))} = nil")
         elif util.is_func_ptr(field_type):
             l(f"    var {field_name}: (@convention(c) ({funcptr_args_c(field_type, prefix)}) -> {funcptr_result_c(field_type)})? = nil")
         elif util.is_1d_array_type(field_type):
@@ -367,7 +369,7 @@ def gen_struct(decl, prefix):
                 t1 = f"{swift_type}"
                 l(f"    var {field_name}: {t0} = Array(repeating: {t1}({def_val}), count: {array_sizes[0]})")
             elif util.is_const_void_ptr(array_type):
-                l(f"    {field_name}: [UnsafeRawPointer?] = Array(repeating: nil, count: {array_sizes[0]})")
+                l(f"    var {field_name}: [UnsafeRawPointer?] = Array(repeating: nil, count: {array_sizes[0]})")
             else:
                 sys.exit(f"ERROR gen_struct: array {field_name}: {field_type} => {array_type} [{array_sizes[0]}]")
         elif util.is_2d_array_type(field_type):
@@ -381,8 +383,8 @@ def gen_struct(decl, prefix):
                 def_val = ""
             else:
                 sys.exit(f"ERROR gen_struct is_2d_array_type: {array_type}")
-            t0 = f"[{array_sizes[0]}][{array_sizes[1]}]{swift_type}"
-            l(f"    {field_name}: {t0} = [_][{array_sizes[1]}]{swift_type}{{[_]{swift_type}{{{def_val}}} ** {array_sizes[1]}}} ** {array_sizes[0]}")
+            t0 = f"{swift_type}"
+            l(f"    var {field_name}: [[{t0}]] = Array(repeating: Array(repeating: {t0}({def_val}), count: {array_sizes[1]}), count: {array_sizes[0]})")
         else:
             sys.exit(f"ERROR gen_struct: {field_name}: {field_type}")
     l("}")
@@ -394,7 +396,7 @@ def gen_consts(decl, prefix):
 
 def gen_enum(decl, prefix):
     enum_name = check_override(decl['name'])
-    l(f"enum {as_swift_enum_type(enum_name, prefix)} : Int32 {{")
+    l(f"enum {as_swift_enum_type(enum_name, prefix)} : UInt32 {{")
     for item in decl['items']:
         item_name = as_enum_item_name(check_override(item['name']))
         if item_name != "Force_u32":
@@ -410,7 +412,7 @@ def gen_func_c(decl, prefix):
         l(f"func {decl['name']}({funcdecl_args_c(decl, prefix)}) -> {funcdecl_result_c(decl, prefix)}")
     else:
         l(f"func {decl['name']}({funcdecl_args_c(decl, prefix)})")
-    l(f"")
+    l('')
 
 def gen_func_swift(decl, prefix):
     c_func_name = decl['name']
@@ -424,10 +426,7 @@ def gen_func_swift(decl, prefix):
             l(f"func {swift_func_name}({funcdecl_args_swift(decl, prefix)}) -> {swift_res_type} {{")
         else:
             l(f"func {swift_func_name}({funcdecl_args_swift(decl, prefix)}) {{")
-        if is_swift_string(swift_res_type):
-            # special case: convert C string to Swift string slice
-            s = f"    return cStrToSwift({c_func_name}("
-        elif swift_res_type != 'void':
+        if swift_res_type != 'void':
             s = f"    return {c_func_name}("
         else:
             s = f"    {c_func_name}("
@@ -437,13 +436,11 @@ def gen_func_swift(decl, prefix):
             arg_name = param_decl['name']
             arg_type = param_decl['type']
             if is_const_struct_ptr(arg_type):
-                s += f"&{arg_name}"
+                s += f"{arg_name}"
             elif util.is_string_ptr(arg_type):
                 s += f"{arg_name}"
             else:
                 s += arg_name
-        if is_swift_string(swift_res_type):
-            s += ")"
         s += ")"
         l(s)
         l("}")
@@ -463,87 +460,10 @@ def pre_parse(inp):
                 enum_items[enum_name].append(as_enum_item_name(item['name']))
 
 def gen_imports(inp, dep_prefixes):
-    # l('const builtin = @import("builtin");')
-    for dep_prefix in dep_prefixes:
-        dep_module_name = module_names[dep_prefix]
-        # l(f'const {dep_prefix[:-1]} = @import("{dep_module_name}.swift");')
-    l('')
+    pass
 
 def gen_helpers(inp):
-    l('// helper function to convert a C string to a Swift string slice')
-    # l('fn cStrToSwift(c_str: [*c]const u8) [:0]const u8 {')
-    # l('    return @import("std").mem.span(c_str);')
-    # l('}')
-    # if inp['prefix'] in ['sg_', 'sdtx_', 'sshape_', 'sfetch_']:
-    #     l('// helper function to convert "anything" to a Range struct')
-    #     l('pub fn asRange(val: anytype) Range {')
-    #     l('    const type_info = @typeInfo(@TypeOf(val));')
-    #     l('    // FIXME: naming convention change between 0.13 and 0.14-dev')
-    #     l('    if (@hasField(@TypeOf(type_info), "Pointer")) {')
-    #     l('        switch (type_info) {')
-    #     l('            .Pointer => {')
-    #     l('                switch (type_info.Pointer.size) {')
-    #     l('                    .One => return .{ .ptr = val, .size = @sizeOf(type_info.Pointer.child) },')
-    #     l('                    .Slice => return .{ .ptr = val.ptr, .size = @sizeOf(type_info.Pointer.child) * val.len },')
-    #     l('                    else => @compileError("FIXME: Pointer type!"),')
-    #     l('                }')
-    #     l('            },')
-    #     l('            .Struct, .Array => {')
-    #     l('                @compileError("Structs and arrays must be passed as pointers to asRange");')
-    #     l('            },')
-    #     l('            else => {')
-    #     l('                @compileError("Cannot convert to range!");')
-    #     l('            },')
-    #     l('        }')
-    #     l('    } else {')
-    #     l('        switch (type_info) {')
-    #     l('            .pointer => {')
-    #     l('                switch (type_info.pointer.size) {')
-    #     l('                    .One => return .{ .ptr = val, .size = @sizeOf(type_info.pointer.child) },')
-    #     l('                    .Slice => return .{ .ptr = val.ptr, .size = @sizeOf(type_info.pointer.child) * val.len },')
-    #     l('                    else => @compileError("FIXME: Pointer type!"),')
-    #     l('                }')
-    #     l('            },')
-    #     l('            .@"struct", .array => {')
-    #     l('                @compileError("Structs and arrays must be passed as pointers to asRange");')
-    #     l('            },')
-    #     l('            else => {')
-    #     l('                @compileError("Cannot convert to range!");')
-    #     l('            },')
-    #     l('        }')
-    #     l('    }')
-    #     l('}')
-    #     l('')
-    # if inp['prefix'] == 'sdtx_':
-    #     l('// std.fmt compatible Writer')
-    #     l('pub const Writer = struct {')
-    #     l('    pub const Error = error{};')
-    #     l('    pub fn writeAll(self: Writer, bytes: []const u8) Error!void {')
-    #     l('        _ = self;')
-    #     l('        for (bytes) |byte| {')
-    #     l('            putc(byte);')
-    #     l('        }')
-    #     l('    }')
-    #     l('    pub fn writeByteNTimes(self: Writer, byte: u8, n: usize) Error!void {')
-    #     l('        _ = self;')
-    #     l('        var i: u64 = 0;')
-    #     l('        while (i < n) : (i += 1) {')
-    #     l('            putc(byte);')
-    #     l('        }')
-    #     l('    }')
-    #     l('    pub fn writeBytesNTimes(self: Writer, bytes: []const u8, n: usize) Error!void {')
-    #     l('        var i: usize = 0;')
-    #     l('        while (i < n) : (i += 1) {')
-    #     l('            try self.writeAll(bytes);')
-    #     l('        }')
-    #     l('    }')
-    #     l('};')
-    #     l('// std.fmt-style formatted print')
-    #     l('pub fn print(comptime fmt: anytype, args: anytype) void {')
-    #     l('    const writer: Writer = .{};')
-    #     l('    @import("std").fmt.format(writer, fmt, args) catch {};')
-    #     l('}')
-    #     l('')
+    pass
 
 def gen_module(inp, dep_prefixes):
     l('// machine generated, do not edit')
